@@ -45,6 +45,7 @@ from benchmarks.duplex.v15_audio import (
     reconstruct_output,
     write_json,
 )
+from benchmarks.duplex.dataset_spec import SPEC
 from benchmarks.duplex.v15_dataset import Sample as V15Sample
 
 logger = logging.getLogger(__name__)
@@ -313,6 +314,7 @@ async def run_samples(
             "source": source,
             "server": server,
             "dataset": {
+                "spec": {"name": SPEC["name"], "language": SPEC["language"]},
                 "root": str(dataset_root),
                 "revision": dataset_revision,
                 "inventory": dataset.inventory(dataset_root),

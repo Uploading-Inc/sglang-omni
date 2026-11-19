@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Qwen3-Omni as a realtime voice assistant over the Session API, on two A100-80GB (SM80). Uploading-Inc fork.
+# Same placement and fractions as session_h100.yaml (A100-80GB has the H100's memory). One change: the talker's MoE
+# runs on the triton backend, because the default flashinfer_cutlass backend failed on SM80 in our serving
+# (Qwen3OmniTalker; sglang_omni/platforms/cuda.py picks flashinfer_cutlass only when the backend is "auto").
+config_cls: Qwen3OmniSessionPipelineConfig
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+max_sessions: 4
+
+stages:
+  image_encoder:
+    gpu: 0
+    gpu_memory_fraction: 0.02
+  audio_encoder:
+    gpu: 1
+    gpu_memory_fraction: 0.02
+  thinker:
+    gpu: 0
+    gpu_memory_fraction: 0.82
+    engine:
+      cuda_graph_backend_prefill: breakable
+      cuda_graph_max_bs_prefill: 2048
+  talker_ar:
+    gpu: 1
+    gpu_memory_fraction: 0.40
+    engine:
+      moe_runner_backend: triton
+  code2wav:
+    gpu: 1
+    gpu_memory_fraction: 0.02
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: ["input:pcm16", "input:session"]
+  qwen_omni:
+    stages: [preprocessing, image_encoder, audio_encoder, thinker, talker_ar, code2wav]
+    inputs:
+      - "dialog:qwen.unit"
+      - {kind: control, source: input, event: configure}
+      - {kind: control, source: dialog, event: configure}
+      - {kind: control, source: dialog, event: interrupt, preempt: true}
+      - {kind: control, source: dialog, event: qwen.truncate}
+  dialog:
+    stages: [dialog]
+    inputs:
+      - "input:pcm16"
+      - "input:session"
+      - "input:image_frame"
+      - "vad:session"
+      - {kind: control, source: input, event: interrupt, preempt: true}
+      # A reply publishes three controls (turn.started, reply.progress, turn.done) and the dialog
+      # starts the next reply only once it took turn.done, so with an interrupted reply leaving at
+      # most two behind, the default capacity of 16 never drops one.
+      - {source: "qwen_omni:session", feedback: true, overflow: drop_oldest}
+
+session_publish:
+  vad: [session]
+  dialog: [session]
+  qwen_omni: [pcm_f32le, session, text_delta]

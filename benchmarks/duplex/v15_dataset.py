@@ -14,19 +14,10 @@ from pathlib import Path
 import soundfile
 from pydantic import JsonValue
 
-SUBSETS = (
-    "user_interruption",
-    "user_backchannel",
-    "talking_to_other",
-    "background_speech",
-)
-# note (wenyao): README counts; the released backchannel archive holds 98.
-DECLARED_COUNTS = {
-    "user_interruption": 200,
-    "user_backchannel": 99,
-    "talking_to_other": 100,
-    "background_speech": 100,
-}
+from benchmarks.duplex.dataset_spec import SPEC
+
+SUBSETS = tuple(SPEC["v15"])
+DECLARED_COUNTS = dict(SPEC["v15"])
 REQUIRED_FILES = {
     "input": "input.wav",
     "clean_input": "clean_input.wav",

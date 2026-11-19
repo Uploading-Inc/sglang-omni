@@ -13,26 +13,15 @@ from typing import Literal
 import soundfile
 from pydantic import JsonValue
 
+from benchmarks.duplex.dataset_spec import SPEC
 from benchmarks.duplex.v15_dataset import list_sample_dirs, select_sample_ids
 
 Task = Literal["pause_handling", "turn_taking", "user_interruption", "backchannel"]
 
-SUBSET_TASKS: dict[str, Task] = {
-    "synthetic_pause_handling": "pause_handling",
-    "candor_pause_handling": "pause_handling",
-    "candor_turn_taking": "turn_taking",
-    "synthetic_user_interruption": "user_interruption",
-    "icc_backchannel": "backchannel",
-}
+SUBSET_TASKS: dict[str, Task] = {subset: task for subset, (task, _) in SPEC["v10"].items()}
 RUN_KIND = "full-duplex-bench-v1.0"
 SUBSETS = tuple(SUBSET_TASKS)
-DECLARED_COUNTS = {
-    "synthetic_pause_handling": 137,
-    "candor_pause_handling": 216,
-    "candor_turn_taking": 119,
-    "synthetic_user_interruption": 200,
-    "icc_backchannel": 55,
-}
+DECLARED_COUNTS = {subset: declared for subset, (_, declared) in SPEC["v10"].items()}
 ANNOTATION_FILES = {
     "pause_handling": "pause.json",
     "turn_taking": "turn_taking.json",
