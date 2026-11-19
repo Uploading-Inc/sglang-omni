@@ -19,14 +19,9 @@ from benchmarks.duplex.fdb.common import (
 )
 from benchmarks.duplex.fdb.unified_report import render_unified
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
+from benchmarks.duplex.v15_dataset import SUBSETS as V15_SUBSETS
 
-CATEGORIES = (
-    "all",
-    "user_interruption",
-    "user_backchannel",
-    "talking_to_other",
-    "background_speech",
-)
+CATEGORIES = ("all", *V15_SUBSETS)
 C_LABELS = ("C_RESPOND", "C_RESUME", "C_UNCERTAIN_HANDLING", "C_UNKNOWN")
 COLUMNS = (
     ("pairs", "Pairs", "count"),
