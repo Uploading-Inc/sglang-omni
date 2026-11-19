@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from benchmarks.duplex.profiles import PROFILES, ProfileName
@@ -39,7 +40,9 @@ class Engine:
         if PROFILES[self.record_profile].protocol == "native":
             return None
         else:
-            return json.dumps({"type": "server_vad", "silence_duration_ms": 500})
+            return turn_detection_override() or json.dumps(
+                {"type": "server_vad", "silence_duration_ms": 500}
+            )
 
     @property
     def ready_text(self) -> str:
@@ -98,3 +101,40 @@ ENGINES: dict[EngineName, Engine] = {
         needs_aligner=True,
     ),
 }
+
+
+# Uploading-Inc fork: the turn-based baselines differ only in how a turn ends. FDB_TURN_DETECTION (a JSON
+# turn_detection object) replaces the recorder's server_vad 500 ms request, and FDB_LAUNCH_CONFIG (a path relative
+# to the repository) replaces the engine's launch config, e.g. examples/qwen3_omni/session_a100_semantic.yaml with
+# {"type": "semantic_vad", "eagerness": "medium"}. Both are read once, at import, and recorded in the run manifest
+# through the recorder's --turn-detection and the server command.
+TURN_DETECTION_ENV = "FDB_TURN_DETECTION"
+LAUNCH_CONFIG_ENV = "FDB_LAUNCH_CONFIG"
+TURN_DETECTION_TYPES = ("server_vad", "semantic_vad")
+
+
+def turn_detection_override() -> str | None:
+    raw = os.environ.get(TURN_DETECTION_ENV)
+    if not raw:
+        return None
+    else:
+        pass
+    value = json.loads(raw)
+    if not isinstance(value, dict) or value.get("type") not in TURN_DETECTION_TYPES:
+        raise ValueError(f"{TURN_DETECTION_ENV} must be a JSON object with type in {TURN_DETECTION_TYPES}")
+    else:
+        pass
+    return json.dumps(value, sort_keys=True)
+
+
+if os.environ.get(LAUNCH_CONFIG_ENV):
+    ENGINES = {
+        name: (
+            replace(engine, launch_config=os.environ[LAUNCH_CONFIG_ENV])
+            if engine.launch_config is not None
+            else engine
+        )
+        for name, engine in ENGINES.items()
+    }
+else:
+    pass
