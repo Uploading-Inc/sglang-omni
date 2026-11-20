@@ -2,9 +2,9 @@
 #
 # Qwen3-Omni as a realtime voice assistant over the Session API, on two A100-80GB (SM80), turns ended by Smart Turn v3.2
 # (the turn_detection node, semantic_vad). Uploading-Inc fork.
-# Same placement and fractions as session_h100.yaml (A100-80GB has the H100's memory). One change: the talker's MoE
-# runs on the triton backend, because the default flashinfer_cutlass backend failed on SM80 in our serving
-# (Qwen3OmniTalker; sglang_omni/platforms/cuda.py picks flashinfer_cutlass only when the backend is "auto").
+# The session_h100.yaml of this base with one change: the talker's MoE runs on the triton backend, because the default
+# flashinfer_cutlass backend failed on SM80 in our serving (Qwen3OmniTalker; sglang_omni/platforms/cuda.py picks
+# flashinfer_cutlass only when the backend is "auto").
 config_cls: Qwen3OmniSessionPipelineConfig
 model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
 max_sessions: 4
@@ -47,7 +47,6 @@ session_nodes:
     inputs:
       - "dialog:qwen.unit"
       - {kind: control, source: input, event: configure}
-      - {kind: control, source: dialog, event: configure}
       - {kind: control, source: dialog, event: interrupt, preempt: true}
       - {kind: control, source: dialog, event: qwen.truncate}
   dialog:
