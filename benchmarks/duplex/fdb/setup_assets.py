@@ -79,6 +79,8 @@ V10_DATASET_DRIVE_FILE_IDS = {
 # this need double check.
 ALIGNER_PACKAGES = [
     "qwen-asr==0.0.6",
+    # Uploading-Inc fork: own_asr_qwen's speech gate (asr_speech_gate pins the version and the model SHA-256).
+    "silero-vad==6.2.1",
     "fastapi==0.156.4",
     "uvicorn==0.54.0",
     "httpx==0.28.1",

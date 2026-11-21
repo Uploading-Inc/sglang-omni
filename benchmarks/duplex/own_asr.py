@@ -8,6 +8,9 @@ It writes what unified-score reads, without the Full-Duplex-Bench source:
 User-interruption audio is cropped at the end R of the interruption (interrupt.json[0]["timestamp"][1]) before
 recognition, and R is added back to every word, as reference-asr does. This module's recogniser is the harness's
 pinned Parakeet (en). The Qwen3-ASR recogniser (zh) lives in own_asr_qwen, which runs in the aligner venv.
+
+Only the zh recogniser sits behind asr_speech_gate. Parakeet returns no word on silence and noise (Phase 1 smoke), this
+recogniser is the harness's reference-asr one, and a gate can only remove words, so on en it could only add misses.
 """
 
 from __future__ import annotations
