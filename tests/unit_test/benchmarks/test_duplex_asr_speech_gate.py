@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Uploading-Inc fork: the zh recogniser hears nothing in silence or noise, and still hears a short voiced sound.
 
+A word the aligner starts on its last frame, past the reply's end, is moved onto that end (own_asr_qwen.on_segment).
+
 No GPU and no Qwen3-ASR: the model is a stand-in that, like Qwen3-ASR-1.7B on the Phase 1 smoke, answers "嗯。" to
 anything. The VAD is the real pinned Silero model, so run this where silero-vad 6.2.1 is installed (the aligner venv).
 """
 
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,11 +17,15 @@ import pytest
 import soundfile
 
 from benchmarks.duplex import asr_speech_gate, own_asr
-from benchmarks.duplex.own_asr_qwen import qwen_recogniser
+from benchmarks.duplex.own_asr_qwen import ALIGNER_FRAME_S, check_aligner_frame, qwen_recogniser
 
 RATE = 16000
 WINDOW_S = 10.0
 VOWEL_AT_S = 3.0
+# Phase 1 units whose aligner word started past the reply's end (ashy_ocean_72t46qrk7x): 16 kHz output.wav length in
+# samples, and the interruption end R that own_asr crops at, or None for turn-taking.
+PAST_THE_END_UNITS = [("zh_turn_taking/74", 298154, None), ("zh_turn_taking/128", 307063, None),
+                      ("zh_turn_taking/153", 296132, None), ("zh_user_interruption/161", 344044, 6.475)]
 
 
 class HallucinatingQwen:
@@ -31,6 +38,25 @@ class HallucinatingQwen:
         assert language == ["Chinese"] and return_time_stamps
         self.heard.extend(audio)
         return [SimpleNamespace(text="嗯。", time_stamps=[SimpleNamespace(text="嗯", start_time=3.04, end_time=3.36)])]
+
+
+class FrameGridQwen:
+    """Answers "嗯。" with one token starting at start_s, or by default where Qwen3-ForcedAligner put the four Phase 1
+    words: at the end of the segment's last 80 ms frame, ceil(d / 80 ms) * 80 ms, rounded to the ms like qwen-asr."""
+
+    def __init__(self, start_s: float | None = None) -> None:
+        self.start_s = start_s
+        self.segment_s: list[float] = []
+        self.starts: list[float] = []
+
+    def transcribe(self, audio: list[str], language: list[str], return_time_stamps: bool) -> list[SimpleNamespace]:
+        info = soundfile.info(audio[0])
+        self.segment_s.append(info.frames / info.samplerate)
+        start_s = (round(math.ceil(info.frames / info.samplerate / ALIGNER_FRAME_S) * ALIGNER_FRAME_S, 3)
+                   if self.start_s is None else self.start_s)
+        self.starts.append(start_s)
+        return [SimpleNamespace(text="嗯。", time_stamps=[SimpleNamespace(text="嗯", start_time=start_s,
+                                                                         end_time=start_s)])]
 
 
 def write(path: Path, samples: np.ndarray, rate: int = RATE) -> Path:
@@ -139,3 +165,46 @@ def test_the_loader_refuses_another_silero(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(asr_speech_gate, "file_sha256", lambda path: "0" * 64)
     with pytest.raises(SystemExit, match="SHA-256"):
         asr_speech_gate.load_gate_vad()
+
+
+@pytest.mark.parametrize(("unit", "frames", "end_r"), PAST_THE_END_UNITS)
+def test_a_start_on_the_aligners_last_frame_end_is_moved_onto_the_reply_end(
+        tmp_path: Path, vad, unit: str, frames: int, end_r: float | None) -> None:
+    sample_dir = tmp_path / unit
+    sample_dir.mkdir(parents=True)
+    samples = np.zeros(frames)
+    clip = vowel(0.4)
+    samples[10 * RATE:10 * RATE + len(clip)] = clip                       # after R, so the crop keeps it
+    write(sample_dir / "output.wav", samples)
+    task = "turn_taking" if end_r is None else "user_interruption"
+    if end_r is not None:
+        (sample_dir / "interrupt.json").write_text(json.dumps([{"timestamp": [end_r - 1.0, end_r]}]))
+    model = FrameGridQwen()
+    document = json.loads(own_asr.transcribe_sample(sample_dir, task, qwen_recogniser(model, "Chinese", vad)))
+    (segment_s,), (aligner_start_s,) = model.segment_s, model.starts
+    assert 0 < aligner_start_s - segment_s < ALIGNER_FRAME_S               # the Phase 1 failure, reproduced
+    window_s = round(frames / RATE, 6)                                     # T as unified-score reads it
+    ((start_s, end_s),) = [chunk["timestamp"] for chunk in document["chunks"]]
+    assert 0 <= start_s <= window_s and window_s - start_s < 2e-6          # the scorer's [0, T], at T
+    assert end_s == round(aligner_start_s + (end_r or 0.0), 6)            # ends are not moved
+
+
+def test_a_start_more_than_one_frame_past_the_end_is_left_for_the_scorer_to_fail(tmp_path: Path, vad) -> None:
+    path = write(tmp_path / "reply.wav", window_with(vowel(0.4)))
+    for start_s in (WINDOW_S + ALIGNER_FRAME_S + 0.001, WINDOW_S + 1.0):
+        assert qwen_recogniser(FrameGridQwen(start_s), "Chinese", vad)(path) == [("嗯", start_s, start_s)]
+
+
+def test_a_start_on_the_segment_end_is_untouched(tmp_path: Path, vad) -> None:
+    path = write(tmp_path / "reply.wav", window_with(vowel(0.4)))
+    assert qwen_recogniser(FrameGridQwen(WINDOW_S), "Chinese", vad)(path) == [("嗯", WINDOW_S, WINDOW_S)]
+
+
+def test_the_aligner_frame_is_checked() -> None:
+    def aligner(frame_ms: float) -> SimpleNamespace:
+        return SimpleNamespace(forced_aligner=SimpleNamespace(timestamp_segment_time=frame_ms))
+
+    model = aligner(80)
+    assert check_aligner_frame(model) is model
+    with pytest.raises(SystemExit, match="40 ms frames"):
+        check_aligner_frame(aligner(40))
