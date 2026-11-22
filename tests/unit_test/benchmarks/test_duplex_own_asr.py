@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,7 @@ import soundfile
 
 from benchmarks.duplex import own_asr, unified_v10
 from benchmarks.duplex.reference_asr import validate_transcript
+from benchmarks.duplex.own_asr_qwen import ALIGNER_FRAME_S, on_segment
 from benchmarks.duplex.reference_v10 import MANIFEST_KIND
 
 SAMPLE_RATE = 16000
@@ -65,3 +67,49 @@ def test_own_transcripts_score_under_the_unified_rules(tmp_path: Path, monkeypat
     assert scored["synthetic_user_interruption"]["counts"]["eligible"] == 1
     with pytest.raises(SystemExit):
         own_asr.transcribe_tree(tree, recognise, {"backend": "fake"})       # never overwrites a receipt
+
+
+# Phase 1 (ashy_ocean_72t46qrk7x): zh units whose aligner word started on the reply's last 80 ms frame end, past T.
+# The 16 kHz output.wav length in samples, the interruption end R (None for turn-taking), and unified-score's error.
+PAST_THE_END_UNITS = [
+    ("zh_turn_taking/74", 298154, None, "word start 18.64 is outside [0, 18.634625]"),
+    ("zh_turn_taking/128", 307063, None, "word start 19.2 is outside [0, 19.191437]"),
+    ("zh_turn_taking/153", 296132, None, "word start 18.56 is outside [0, 18.50825]"),
+    ("zh_user_interruption/161", 344044, 6.475, "word start 21.515 is outside [0, 21.50275]"),
+]
+
+
+def last_frame_end(audio_path: Path) -> list[own_asr.TimedWord]:
+    """Where Qwen3-ForcedAligner started those words: the end of the segment's last 80 ms frame, to the ms."""
+    info = soundfile.info(str(audio_path))
+    start_s = round(math.ceil(info.frames / info.samplerate / ALIGNER_FRAME_S) * ALIGNER_FRAME_S, 3)
+    return [("嗯", start_s, start_s)]
+
+
+def unified_problems(tmp_path: Path, unit: str, frames: int, end_r: float | None,
+                     recognise: own_asr.Recogniser) -> list[str]:
+    sample_dir = tmp_path / unit
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    soundfile.write(sample_dir / "output.wav", np.zeros(frames, dtype=np.int16), SAMPLE_RATE)
+    task, reference = ("turn_taking", 5.0) if end_r is None else ("user_interruption", (end_r - 1.0, end_r))
+    if end_r is not None:
+        (sample_dir / "interrupt.json").write_text(json.dumps([{"timestamp": [end_r - 1.0, end_r]}]))
+    document = json.loads(own_asr.transcribe_sample(sample_dir, task, recognise))
+    spans = unified_v10.word_spans(document["chunks"])
+    return unified_v10.timestamp_problems(task, spans, reference, unified_v10.seconds(frames / SAMPLE_RATE))
+
+
+@pytest.mark.parametrize(("unit", "frames", "end_r", "error"), PAST_THE_END_UNITS)
+def test_an_aligner_start_on_the_last_frame_end_scores_once_on_the_segment(
+        tmp_path: Path, unit: str, frames: int, end_r: float | None, error: str) -> None:
+    assert unified_problems(tmp_path / "raw", unit, frames, end_r, last_frame_end) == [error]
+    assert unified_problems(tmp_path / "fixed", unit, frames, end_r, on_segment(last_frame_end)) == []
+
+
+def test_an_aligner_start_beyond_one_frame_still_fails_unified_score(tmp_path: Path) -> None:
+    def past(audio_path: Path) -> list[own_asr.TimedWord]:
+        return [("嗯", start_s + ALIGNER_FRAME_S + 0.001, start_s + ALIGNER_FRAME_S + 0.001)
+                for _, start_s, _ in last_frame_end(audio_path)]
+
+    problems = unified_problems(tmp_path, "zh_turn_taking/153", 296132, None, on_segment(past))
+    assert "word start 18.641 is outside [0, 18.50825]" in problems
