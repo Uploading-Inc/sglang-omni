@@ -24,8 +24,11 @@ WINDOW_S = 10.0
 VOWEL_AT_S = 3.0
 # Phase 1 units whose aligner word started past the reply's end (ashy_ocean_72t46qrk7x): 16 kHz output.wav length in
 # samples, and the interruption end R that own_asr crops at, or None for turn-taking.
+# Phase 1 units: ashy_ocean_72t46qrk7x (prereg §16), then helpful_hamster_pvjn44n8pj (prereg §17)
 PAST_THE_END_UNITS = [("zh_turn_taking/74", 298154, None), ("zh_turn_taking/128", 307063, None),
-                      ("zh_turn_taking/153", 296132, None), ("zh_user_interruption/161", 344044, 6.475)]
+                      ("zh_turn_taking/153", 296132, None), ("zh_user_interruption/161", 344044, 6.475),
+                      ("zh_turn_taking/124", 291684, None), ("zh_turn_taking/79", 295094, None),
+                      ("zh_turn_taking/53", 318304, None), ("zh_turn_taking/19", 315912, None)]
 
 
 class HallucinatingQwen:
@@ -41,22 +44,26 @@ class HallucinatingQwen:
 
 
 class FrameGridQwen:
-    """Answers "嗯。" with one token starting at start_s, or by default where Qwen3-ForcedAligner put the four Phase 1
-    words: at the end of the segment's last 80 ms frame, ceil(d / 80 ms) * 80 ms, rounded to the ms like qwen-asr."""
+    """Answers "嗯。" with one token starting at start_s, or by default where Qwen3-ForcedAligner put the eight Phase 1
+    words: a start at the end of the segment's last 80 ms frame, ceil(d / 80 ms) * 80 ms, and an end one frame later,
+    each rounded to the ms like qwen-asr. A given start_s ends where it starts."""
 
     def __init__(self, start_s: float | None = None) -> None:
         self.start_s = start_s
         self.segment_s: list[float] = []
         self.starts: list[float] = []
+        self.ends: list[float] = []
 
     def transcribe(self, audio: list[str], language: list[str], return_time_stamps: bool) -> list[SimpleNamespace]:
         info = soundfile.info(audio[0])
         self.segment_s.append(info.frames / info.samplerate)
-        start_s = (round(math.ceil(info.frames / info.samplerate / ALIGNER_FRAME_S) * ALIGNER_FRAME_S, 3)
-                   if self.start_s is None else self.start_s)
+        frame = math.ceil(info.frames / info.samplerate / ALIGNER_FRAME_S)
+        start_s = round(frame * ALIGNER_FRAME_S, 3) if self.start_s is None else self.start_s
+        end_s = round((frame + 1) * ALIGNER_FRAME_S, 3) if self.start_s is None else self.start_s
         self.starts.append(start_s)
+        self.ends.append(end_s)
         return [SimpleNamespace(text="嗯。", time_stamps=[SimpleNamespace(text="嗯", start_time=start_s,
-                                                                         end_time=start_s)])]
+                                                                         end_time=end_s)])]
 
 
 def write(path: Path, samples: np.ndarray, rate: int = RATE) -> Path:
@@ -168,7 +175,7 @@ def test_the_loader_refuses_another_silero(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.parametrize(("unit", "frames", "end_r"), PAST_THE_END_UNITS)
-def test_a_start_on_the_aligners_last_frame_end_is_moved_onto_the_reply_end(
+def test_a_word_on_the_aligners_last_frame_end_is_moved_onto_the_reply_end(
         tmp_path: Path, vad, unit: str, frames: int, end_r: float | None) -> None:
     sample_dir = tmp_path / unit
     sample_dir.mkdir(parents=True)
@@ -186,7 +193,9 @@ def test_a_start_on_the_aligners_last_frame_end_is_moved_onto_the_reply_end(
     window_s = round(frames / RATE, 6)                                     # T as unified-score reads it
     ((start_s, end_s),) = [chunk["timestamp"] for chunk in document["chunks"]]
     assert 0 <= start_s <= window_s and window_s - start_s < 2e-6          # the scorer's [0, T], at T
-    assert end_s == round(aligner_start_s + (end_r or 0.0), 6)            # ends are not moved
+    (aligner_end_s,) = model.ends
+    assert ALIGNER_FRAME_S < aligner_end_s - segment_s <= 2 * ALIGNER_FRAME_S   # helpful_hamster's failure
+    assert start_s <= end_s <= window_s and window_s - end_s < 2e-6        # the end is moved onto T as well
 
 
 def test_a_start_more_than_one_frame_past_the_end_is_left_for_the_scorer_to_fail(tmp_path: Path, vad) -> None:
