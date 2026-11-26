@@ -122,25 +122,36 @@ def test_an_aligner_word_on_the_last_frame_end_scores_once_on_the_segment(
     assert unified_problems(tmp_path / "fixed", unit, frames, end_r, on_segment(last_frame_end)) == []
 
 
-def test_an_aligner_start_beyond_one_frame_still_fails_unified_score(tmp_path: Path) -> None:
-    def past(audio_path: Path) -> list[own_asr.TimedWord]:
-        return [("嗯", start_s + ALIGNER_FRAME_S + 0.001, end_s + ALIGNER_FRAME_S + 0.001)
-                for _, start_s, end_s in last_frame_end(audio_path)]
+# funny_tooth_v3lq4t58n7 (prereg §19): several trailing characters one to three frames past the last frame end. The
+# 16 kHz length and the reply's last words: the past-the-end times are the Phase 1 errors', the first word is a stand-in.
+PILED_UP_UNITS = [
+    ("zh_turn_taking/106", 293311, [(18.0, 18.3), (18.56, 18.56), (18.56, 18.56), (18.48, 18.56), (18.48, 18.56)]),
+    ("zh_turn_taking/124", 291684, [(18.0, 18.2), (18.32, 18.32), (18.32, 18.4), (18.24, 18.32)]),
+    ("zh_turn_taking/79", 295094, [(18.0, 18.4)] + [(18.56, 18.56)] * 6),
+]
 
-    problems = unified_problems(tmp_path, "zh_turn_taking/153", 296132, None, on_segment(past))
-    assert "word start 18.641 is outside [0, 18.50825]" in problems
-    assert "word end 18.721 is outside [0, 18.58825]" in problems
+
+@pytest.mark.parametrize(("unit", "frames", "words"), PILED_UP_UNITS)
+def test_trailing_words_piled_past_the_end_score_on_the_segment(
+        tmp_path: Path, unit: str, frames: int, words: list[tuple[float, float]]) -> None:
+    def piled(audio_path: Path) -> list[own_asr.TimedWord]:
+        return [("嗯", start_s, end_s) for start_s, end_s in words]
+
+    assert any("is outside" in p for p in unified_problems(tmp_path / "raw", unit, frames, None, piled))
+    assert unified_problems(tmp_path / "fixed", unit, frames, None, on_segment(piled)) == []
 
 
-def test_an_end_beyond_two_frames_still_fails_and_one_within_one_frame_is_untouched(tmp_path: Path) -> None:
-    def ends(*past_s: float) -> own_asr.Recogniser:
+def test_any_start_past_the_end_moves_and_an_end_within_one_frame_stays(tmp_path: Path) -> None:
+    def times(*pairs: tuple[float, float]) -> own_asr.Recogniser:
         def recognise(audio_path: Path) -> list[own_asr.TimedWord]:
             info = soundfile.info(str(audio_path))
             d = info.frames / info.samplerate
-            return [("嗯", round(d - 0.5, 3), round(d + past, 3)) for past in past_s]
+            return [("嗯", round(d + a, 3), round(d + b, 3)) for a, b in pairs]
         return recognise
 
     path = tmp_path / "reply.wav"
     soundfile.write(path, np.zeros(296132, dtype=np.int16), SAMPLE_RATE)       # d = 18.50825 s
-    assert on_segment(ends(0.05, 0.17))(path) == [("嗯", 18.008, 18.558), ("嗯", 18.008, 18.678)]
-    assert on_segment(ends(0.12))(path) == [("嗯", 18.008, 18.50825)]
+    assert on_segment(times((-0.5, 0.05), (-0.5, 0.17), (0.3, 0.4), (1.0, 1.0)))(path) == [
+        ("嗯", 18.008, 18.558),                                                  # end within one frame: the scorer takes it
+        ("嗯", 18.008, 18.50825), ("嗯", 18.50825, 18.50825), ("嗯", 18.50825, 18.50825)]
+    assert on_segment(times((-1.0, -0.5)))(path) == [("嗯", 17.508, 18.008)]  # inside: untouched

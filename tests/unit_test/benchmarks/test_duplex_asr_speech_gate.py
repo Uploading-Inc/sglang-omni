@@ -198,10 +198,10 @@ def test_a_word_on_the_aligners_last_frame_end_is_moved_onto_the_reply_end(
     assert start_s <= end_s <= window_s and window_s - end_s < 2e-6        # the end is moved onto T as well
 
 
-def test_a_start_more_than_one_frame_past_the_end_is_left_for_the_scorer_to_fail(tmp_path: Path, vad) -> None:
+def test_a_start_any_distance_past_the_end_is_moved_onto_it(tmp_path: Path, vad) -> None:
     path = write(tmp_path / "reply.wav", window_with(vowel(0.4)))
     for start_s in (WINDOW_S + ALIGNER_FRAME_S + 0.001, WINDOW_S + 1.0):
-        assert qwen_recogniser(FrameGridQwen(start_s), "Chinese", vad)(path) == [("嗯", start_s, start_s)]
+        assert qwen_recogniser(FrameGridQwen(start_s), "Chinese", vad)(path) == [("嗯", WINDOW_S, WINDOW_S)]
 
 
 def test_a_start_on_the_segment_end_is_untouched(tmp_path: Path, vad) -> None:
