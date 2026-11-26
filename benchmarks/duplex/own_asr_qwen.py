@@ -3,9 +3,8 @@
 
 The artifacts and the interruption crop are own_asr's. Each aligner token is one word; for zh a token is a
 character. A segment with no Silero speech region gets no word and is never given to Qwen3-ASR, which writes "嗯。"
-for silence and for noise (asr_speech_gate). A word start at most one aligner frame past the segment's end is
-moved onto that end, and so is that word's end when it lies more than one and at most two frames past it
-(on_segment). Run it from the aligner venv, which holds qwen-asr, its pinned transformers and silero-vad.
+for silence and for noise (asr_speech_gate). A word time past the segment's end is moved onto that end (a word end
+only when it lies more than one aligner frame past it; on_segment). Run it from the aligner venv, which holds qwen-asr, its pinned transformers and silero-vad.
 """
 
 from __future__ import annotations
@@ -31,24 +30,26 @@ TIME_DECIMALS = 6
 
 
 def on_segment(recognise: Recogniser) -> Recogniser:
-    """recognise, with a word start no more than one aligner frame past the segment's end d moved onto d.
+    """recognise, with every word time past the segment's end d moved onto d (an end only past one aligner frame).
 
-    The aligner gives a time as an 80 ms frame index. When a segment's length d is not a whole number of frames, its
-    last frame ends at ceil(d / 80 ms) * 80 ms, up to one frame past d. In Phase 1 (ashy_ocean_72t46qrk7x), four zh
-    replies got a word starting exactly there, 5 to 52 ms past d, which unified-score rejects. Such a start lies in the
-    segment's last partial frame, so it becomes d, floored to the microsecond: d + R then still rounds inside [0, T]
-    at unified-score's microsecond resolution, even for a 16 kHz segment whose odd length puts T on a rounding
-    boundary. A start more than one frame past d is not a frame-grid artefact; it is left as it is, so unified-score
-    still fails it.
+    The segment has no audio after d, so no word can start there. Qwen3-ForcedAligner can still place one: a time is an
+    80 ms frame index chosen by a classifier that is not bounded by the audio's length, and qwen-asr's
+    `fix_timestamp` repairs out-of-order indices by copying or interpolating their neighbours. Phase 1 saw all of it:
+    - ashy_ocean_72t46qrk7x: four zh replies with one word starting on the last frame end, ceil(d / 80 ms) * 80 ms,
+      5 to 52 ms past d (prereg §16);
+    - helpful_hamster_pvjn44n8pj: the same words ending one frame later, beyond unified-score's one-frame end allowance
+      (§17);
+    - funny_tooth_v3lq4t58n7: up to five trailing characters per reply starting and ending one to three frames past
+      the last frame end, up to 228 ms past d (§19).
 
-    Word ends. The aligner ends a word one frame after a start on that last frame end, so such a word ends at
-    ceil(d / 80 ms) * 80 ms + 80 ms, more than one and at most two frames past d. unified-score allows an end one frame
-    past T (ASR_END_TOLERANCE_S) and rejects this one: in Phase 1 (helpful_hamster_pvjn44n8pj) four zh replies failed
-    so, 10 to 37 ms over that allowance, each a word that starts on the last frame end. An end more than one and at
-    most two frames past d is moved onto d, like the start, when the word's start (after the move above) is not past d.
-    An end at most one frame past d is left as it is (the scorer takes it); an end more than two frames past d, and
-    every time of a word whose start stays past d, are left for the scorer to fail. Both moves touch only
-    times unified-score rejects, so every transcript that could be scored before is unchanged.
+    So a bound on how far past d an artefact can lie does not hold; the rule is the audio's own bound:
+    - a word start past d is moved onto d, floored to the microsecond. d + R then still rounds inside [0, T] at
+      unified-score's microsecond resolution, also for a 16 kHz segment whose odd length puts T on a rounding boundary;
+    - a word end more than one aligner frame past d is moved onto d. An end at most one frame past d is left as it is:
+      unified-score accepts it (ASR_END_TOLERANCE_S), for the same 80 ms reason.
+
+    Only times unified-score rejected are moved, so every transcript that could be scored before is unchanged, byte for
+    byte. The text is never changed, and no word is dropped.
     """
 
     def recognise_on_segment(audio_path: Path) -> list[TimedWord]:
@@ -57,21 +58,18 @@ def on_segment(recognise: Recogniser) -> Recogniser:
         end_s = info.frames * 10 ** TIME_DECIMALS // info.samplerate / 10 ** TIME_DECIMALS
 
         def clamp(start_s: float) -> float:
-            return end_s if end_s < start_s <= duration_s + ALIGNER_FRAME_S + 1e-9 else start_s
+            return end_s if start_s > end_s else start_s
 
-        def clamp_end(start_s: float, end_time_s: float) -> float:
-            past_s = end_time_s - duration_s
-            moved = start_s <= end_s and ALIGNER_FRAME_S + 1e-9 < past_s <= 2 * ALIGNER_FRAME_S + 1e-9
-            return end_s if moved else end_time_s
+        def clamp_end(end_time_s: float) -> float:
+            return end_s if end_time_s > duration_s + ALIGNER_FRAME_S + 1e-9 else end_time_s
 
-        return [(text, clamp(start_s), clamp_end(clamp(start_s), end_time_s))
-                for text, start_s, end_time_s in recognise(audio_path)]
+        return [(text, clamp(start_s), clamp_end(end_time_s)) for text, start_s, end_time_s in recognise(audio_path)]
 
     return recognise_on_segment
 
 
 def check_aligner_frame(model: Any) -> Any:
-    """model, if its forced aligner times on ALIGNER_FRAME_S frames; on_segment's one-frame bound depends on it."""
+    """model, if its forced aligner times on ALIGNER_FRAME_S frames; on_segment's one-frame end allowance assumes it."""
     frame_ms = float(model.forced_aligner.timestamp_segment_time)
     if frame_ms != ALIGNER_FRAME_S * 1000:
         raise SystemExit(f"the forced aligner times on {frame_ms:g} ms frames; on_segment assumes "
@@ -115,8 +113,7 @@ def main() -> None:
     model = load_model(arguments.asr_model, arguments.aligner_model, arguments.device)
     config = {"backend": "qwen3-asr", "model_id": arguments.asr_model, "aligner_id": arguments.aligner_model,
               "language": arguments.language, "device_type": arguments.device, "speech_gate": gate_receipt(),
-              "start_clamp_s": ALIGNER_FRAME_S,
-              "end_clamp_s": [ALIGNER_FRAME_S, 2 * ALIGNER_FRAME_S]}
+              "past_end_clamp": {"start_past_s": 0.0, "end_past_s": ALIGNER_FRAME_S}}
     print(json.dumps(transcribe_tree(arguments.tree, qwen_recogniser(model, arguments.language, vad), config), indent=2))
 
 
